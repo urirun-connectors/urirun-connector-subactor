@@ -121,7 +121,7 @@ def generate_site(
         "headline": headline or project_name,
         "description": description,
         "contact_email": contact_email,
-        "markdown": markdown,
+        "markdown": markdown or f"## O projekcie\n\n{description or project_name}",
         "audience": audience,
     }
     return _call(
