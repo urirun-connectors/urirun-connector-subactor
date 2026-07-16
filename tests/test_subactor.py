@@ -38,3 +38,4 @@ def test_concrete_routes_are_registered():
     routes = core.bindings()["bindings"]
     assert "site-generator://host/site/command/generate" in routes
     assert "organization://host/status/query" in routes
+    assert "organization://org-demo/status/query" in routes

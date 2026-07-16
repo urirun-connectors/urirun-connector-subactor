@@ -28,6 +28,7 @@
     "organization://host/doctor/query/report",
     "organization://host/process/command/dispatch",
     "organization://host/status/query",
+    "organization://org-demo/status/query",
     "project://host/doctor/query/report",
     "project://host/process/command/dispatch",
     "site-generator://host/doctor/query/report",

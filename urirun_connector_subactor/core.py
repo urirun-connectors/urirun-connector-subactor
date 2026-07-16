@@ -131,6 +131,12 @@ def generate_site(
 
 
 @connectors["organization"].handler(
+    "organization://org-demo/status/query",
+    isolated=True,
+    external=True,
+    meta={"label": "Read the default Subactor organization dashboard"},
+)
+@connectors["organization"].handler(
     "status/query",
     isolated=True,
     external=True,
