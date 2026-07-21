@@ -19,7 +19,7 @@ import urirun
 CONNECTOR_ID = "subactor"
 SCHEMES = (
     "analytics", "contractor", "docs", "mail", "org", "organization",
-    "project", "recruitment", "site-generator", "social", "support", "test", "testql", "webpage",
+    "llm", "policy", "project", "recruitment", "site-generator", "social", "support", "test", "testql", "webpage",
 )
 connectors = {scheme: urirun.connector(f"subactor-{scheme}", scheme=scheme) for scheme in SCHEMES}
 # Compatibility export expected by generated connector tooling.
@@ -50,6 +50,13 @@ def _call(
     if ".." in clean_path.split("/"):
         return urirun.fail("relative path segments are not allowed", connector=CONNECTOR_ID, scheme=scheme)
     token = os.environ.get(token_name, "").strip()
+    token_file = os.environ.get(f"{token_name}_FILE", "").strip()
+    if not token and token_file:
+        try:
+            with open(token_file, "r", encoding="utf-8") as stream:
+                token = stream.read(8192).strip()
+        except (OSError, ValueError):
+            return urirun.fail(f"{token_name}_FILE is unavailable", connector=CONNECTOR_ID, scheme=scheme)
     headers = {"accept": "application/json", "user-agent": "urirun-connector-subactor/0.1"}
     data = None
     if method != "GET":
@@ -96,7 +103,10 @@ def _register_gateway(scheme: str) -> None:
     connectors[scheme].handler("doctor/query/report", isolated=True, meta={"label": f"{scheme} readiness"})(doctor)
 
 
-for _scheme in SCHEMES:
+GATEWAY_SCHEMES = tuple(scheme for scheme in SCHEMES if scheme not in {"llm", "policy"})
+
+
+for _scheme in GATEWAY_SCHEMES:
     _register_gateway(_scheme)
 
 
@@ -181,6 +191,98 @@ def draft_job_offer(
         base_env="LLM_GATEWAY_INTERNAL_URL",
         token_env="LLM_GATEWAY_SERVICE_TOKEN",
         timeout_seconds=60.0,
+    )
+
+
+def _planner_project_id(project_id: str) -> str:
+    normalized = str(project_id or "").strip()
+    if not normalized or len(normalized) > 64 or not normalized.replace("-", "a").isalnum():
+        raise ValueError("invalid_project_id")
+    return normalized
+
+
+def _control_call(scheme: str, path: str, payload: dict[str, Any] | None = None, *, method: str = "POST") -> dict[str, Any]:
+    return _call(
+        scheme,
+        path,
+        payload,
+        method=method,
+        base_env="SUBACTOR_CONTROL_URL",
+        token_env="SUBACTOR_CONTROL_TOKEN",
+        timeout_seconds=60.0,
+    )
+
+
+@connectors["project"].handler(
+    "project://remediation/query/snapshot",
+    isolated=True,
+    external=True,
+    meta={"label": "Read one remediation project snapshot"},
+)
+def remediation_snapshot(project_id: str, correlation_id: str = "") -> dict[str, Any]:
+    try:
+        project = _planner_project_id(project_id)
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="project")
+    if correlation_id and (len(str(correlation_id)) > 80 or any(c.isspace() for c in str(correlation_id))):
+        return urirun.fail("invalid_correlation_id", connector=CONNECTOR_ID, scheme="project")
+    return _control_call("project", "/api/projects/remediation/snapshot?" + urlencode({"project_id": project}), method="GET")
+
+
+@connectors["project"].handler(
+    "project://remediation/query/catalog",
+    isolated=True,
+    external=True,
+    meta={"label": "Read the active deterministic remediation catalog"},
+)
+def remediation_catalog(project_id: str) -> dict[str, Any]:
+    try:
+        project = _planner_project_id(project_id)
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="project")
+    return _control_call("project", "/api/projects/remediation/catalog?" + urlencode({"project_id": project}), method="GET")
+
+
+@connectors["llm"].handler(
+    "llm://remediation/command/propose-order",
+    isolated=True,
+    external=True,
+    meta={"label": "Request a bounded remediation ordering proposal"},
+)
+def propose_remediation_order(project_id: str, catalog_only: bool = True) -> dict[str, Any]:
+    try:
+        project = _planner_project_id(project_id)
+        if catalog_only is not True:
+            raise ValueError("catalog_only_must_equal_true")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="llm")
+    return _control_call("llm", "/api/projects/remediation/propose-order", {"project_id": project, "catalog_only": True})
+
+
+@connectors["policy"].handler(
+    "policy://remediation/command/validate-plan",
+    isolated=True,
+    external=True,
+    meta={"label": "Validate a proposal with the canonical control policy"},
+)
+def validate_remediation_plan(
+    project_id: str,
+    proposal: dict[str, Any] | None = None,
+    reject_unknown_fields: bool = True,
+    fallback: str = "deterministic",
+) -> dict[str, Any]:
+    try:
+        project = _planner_project_id(project_id)
+        if reject_unknown_fields is not True or fallback != "deterministic":
+            raise ValueError("validation_policy_required")
+        if proposal is not None and not isinstance(proposal, dict):
+            raise ValueError("proposal_object_required")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="policy")
+    return _control_call(
+        "policy",
+        "/api/projects/remediation/validate-plan",
+        {"project_id": project, "proposal": proposal, "reject_unknown_fields": True, "fallback": "deterministic"},
     )
 
 
