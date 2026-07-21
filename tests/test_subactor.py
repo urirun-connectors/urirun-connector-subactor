@@ -39,3 +39,29 @@ def test_concrete_routes_are_registered():
     assert "site-generator://host/site/command/generate" in routes
     assert "organization://host/status/query" in routes
     assert "organization://org-demo/status/query" in routes
+    assert "recruitment://host/job-offer/command/draft" in routes
+
+
+def test_recruitment_draft_uses_llm_gateway_without_caller_supplied_target(monkeypatch):
+    calls = []
+    monkeypatch.setenv("LLM_GATEWAY_INTERNAL_URL", "http://llm-gateway:8084")
+    monkeypatch.setenv("LLM_GATEWAY_SERVICE_TOKEN", "gateway-token")
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: calls.append((request, timeout)) or Response({"ok": True, "data": {"offer": {"status": "draft"}}}))
+
+    result = core.draft_job_offer(
+        "Utwórz ofertę dla inżyniera automatyzacji PHP.",
+        {"work_mode": "remote"},
+        {"organization": {"name": "Subactor"}},
+    )
+
+    assert result["ok"] is True
+    request, timeout = calls[0]
+    assert request.full_url == "http://llm-gateway:8084/forms/recruitment/job-offer/draft"
+    assert request.headers["Authorization"] == "Bearer gateway-token"
+    assert timeout == 60.0
+    assert "gateway-token" not in json.dumps(result)
+
+
+def test_recruitment_draft_rejects_unbounded_instruction(monkeypatch):
+    assert core.draft_job_offer("za krótko")["ok"] is False
+    assert core.draft_job_offer("x" * 6001)["ok"] is False

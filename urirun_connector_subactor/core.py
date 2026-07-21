@@ -19,7 +19,7 @@ import urirun
 CONNECTOR_ID = "subactor"
 SCHEMES = (
     "analytics", "contractor", "docs", "mail", "org", "organization",
-    "project", "site-generator", "social", "support", "test", "testql", "webpage",
+    "project", "recruitment", "site-generator", "social", "support", "test", "testql", "webpage",
 )
 connectors = {scheme: urirun.connector(f"subactor-{scheme}", scheme=scheme) for scheme in SCHEMES}
 # Compatibility export expected by generated connector tooling.
@@ -147,6 +147,40 @@ def organization_status(organization_id: str = "org-demo") -> dict[str, Any]:
     return _call(
         "organization", path, method="GET",
         base_env="ORG_CORE_INTERNAL_URL", token_env="ORG_CORE_SERVICE_TOKEN",
+    )
+
+
+@connectors["recruitment"].handler(
+    "job-offer/command/draft",
+    isolated=True,
+    external=True,
+    meta={"label": "Generate a validated recruitment job-offer draft"},
+)
+def draft_job_offer(
+    instruction: str,
+    current_values: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Generate a job-offer draft through the deployment-controlled LLM gateway.
+
+    The caller supplies only a bounded instruction, current form values and an
+    explicitly approved context object.  Provider credentials stay in the LLM
+    gateway; this connector never accepts a URL, token or arbitrary HTML.
+    """
+    clean_instruction = str(instruction or "").strip()
+    if len(clean_instruction) < 10 or len(clean_instruction) > 6000:
+        return urirun.fail("instruction must contain 10..6000 characters", connector=CONNECTOR_ID, scheme="recruitment")
+    return _call(
+        "recruitment",
+        "/forms/recruitment/job-offer/draft",
+        {
+            "instruction": clean_instruction,
+            "current_values": current_values if isinstance(current_values, dict) else {},
+            "context": context if isinstance(context, dict) else {},
+        },
+        base_env="LLM_GATEWAY_INTERNAL_URL",
+        token_env="LLM_GATEWAY_SERVICE_TOKEN",
+        timeout_seconds=60.0,
     )
 
 

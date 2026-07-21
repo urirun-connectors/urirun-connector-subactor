@@ -5,7 +5,7 @@
   "category": "Business Operations",
   "summary": "Server-side adapters for URI processes implemented by Subactor services.",
   "description": "Connects a urirun node to deployment-controlled Subactor service URLs. Hosts and bearer tokens come only from environment configuration, never from actor payloads.",
-  "useCases": ["Static site generation", "Organization read models", "Contractor, project, TestQL and support service dispatch"],
+  "useCases": ["Static site generation", "Organization read models", "Schema-validated recruitment form drafts", "Contractor, project, TestQL and support service dispatch"],
   "requires": ["python>=3.10"],
   "install": {"mode": "pip", "pipSpec": "git+https://github.com/urirun-connectors/urirun-connector-subactor.git"},
   "provenance": "official",
