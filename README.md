@@ -9,8 +9,8 @@ It provides concrete routes such as `site-generator://host/site/command/generate
 Every target base URL and credential comes from the node environment; an actor
 cannot inject a target host or bearer token through the process payload.
 
-Supported schemes: `analytics`, `contractor`, `docs`, `llm`, `mail`, `org`,
-`organization`, `policy`, `project`, `recruitment`, `site-generator`, `social`,
+Supported schemes: `analytics`, `audit`, `contractor`, `docs`, `llm`, `mail`, `org`,
+`organization`, `policy`, `problem`, `project`, `recruitment`, `site-generator`, `social`,
 `support`, `test`, `testql`, and `webpage`.
 
 The remediation planner exposes four exact, bounded routes:
@@ -24,6 +24,18 @@ They forward only to the deployment-controlled control service and never accept
 a host, token, model or free-form prompt from the caller. The policy route
 contains no Python copy of the validation rules; the canonical validator remains
 in Subactor core.
+
+The problem-reaction observer exposes four observation-only routes:
+
+- `problem://events/query/by-fingerprint`
+- `problem://reaction/command/record-occurrence`
+- `problem://reaction/query/classification`
+- `audit://problem/command/append-classification`
+
+They use the deployment-controlled Control URL and a token limited to
+`problems:observe`. Repeating the same fingerprint/correlation pair is
+idempotent; callers cannot enable infrastructure mutation or replay the audit
+classification.
 
 For `site-generator://host/site/command/generate`, configure `SITE_GENERATOR_URL` and
 `SITE_GENERATOR_SERVICE_TOKEN`. Generic service adapters use

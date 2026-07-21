@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -18,8 +19,8 @@ import urirun
 
 CONNECTOR_ID = "subactor"
 SCHEMES = (
-    "analytics", "contractor", "docs", "mail", "org", "organization",
-    "llm", "policy", "project", "recruitment", "site-generator", "social", "support", "test", "testql", "webpage",
+    "analytics", "audit", "contractor", "docs", "mail", "org", "organization",
+    "llm", "policy", "problem", "project", "recruitment", "site-generator", "social", "support", "test", "testql", "webpage",
 )
 connectors = {scheme: urirun.connector(f"subactor-{scheme}", scheme=scheme) for scheme in SCHEMES}
 # Compatibility export expected by generated connector tooling.
@@ -211,6 +212,100 @@ def _control_call(scheme: str, path: str, payload: dict[str, Any] | None = None,
         token_env="SUBACTOR_CONTROL_TOKEN",
         timeout_seconds=60.0,
     )
+
+
+def _problem_reference(fingerprint: str, correlation_id: str = "") -> tuple[str, str]:
+    clean_fingerprint = str(fingerprint or "").strip()
+    clean_correlation = str(correlation_id or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{64}", clean_fingerprint):
+        raise ValueError("invalid_problem_fingerprint")
+    if clean_correlation and not re.fullmatch(r"[a-f0-9-]{36}", clean_correlation):
+        raise ValueError("invalid_problem_correlation_id")
+    return clean_fingerprint, clean_correlation
+
+
+@connectors["problem"].handler(
+    "problem://events/query/by-fingerprint",
+    isolated=True,
+    external=True,
+    meta={"label": "Read one safe problem profile by fingerprint"},
+)
+def problem_by_fingerprint(fingerprint: str, correlation_id: str = "") -> dict[str, Any]:
+    try:
+        fingerprint, correlation_id = _problem_reference(fingerprint, correlation_id)
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="problem")
+    query = {"fingerprint": fingerprint}
+    if correlation_id:
+        query["correlation_id"] = correlation_id
+    return _control_call("problem", "/api/problems/events/by-fingerprint?" + urlencode(query), method="GET")
+
+
+@connectors["problem"].handler(
+    "problem://reaction/command/record-occurrence",
+    isolated=True,
+    external=True,
+    meta={"label": "Record an idempotent observation of an existing problem occurrence"},
+)
+def record_problem_occurrence(fingerprint: str, correlation_id: str, external_mutations: int = 0) -> dict[str, Any]:
+    try:
+        fingerprint, correlation_id = _problem_reference(fingerprint, correlation_id)
+        if not correlation_id:
+            raise ValueError("problem_correlation_id_required")
+        if external_mutations != 0:
+            raise ValueError("external_mutations_must_equal_zero")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="problem")
+    return _control_call("problem", "/api/problems/reactions/occurrences", {
+        "fingerprint": fingerprint,
+        "correlation_id": correlation_id,
+        "external_mutations": 0,
+    })
+
+
+@connectors["problem"].handler(
+    "problem://reaction/query/classification",
+    isolated=True,
+    external=True,
+    meta={"label": "Read the deterministic non-mutating reaction classification"},
+)
+def problem_reaction_classification(
+    fingerprint: str,
+    correlation_id: str = "",
+    automatic_mutation_allowed: bool = False,
+) -> dict[str, Any]:
+    try:
+        fingerprint, correlation_id = _problem_reference(fingerprint, correlation_id)
+        if automatic_mutation_allowed is not False:
+            raise ValueError("automatic_mutation_must_equal_false")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="problem")
+    query = {"fingerprint": fingerprint}
+    if correlation_id:
+        query["correlation_id"] = correlation_id
+    return _control_call("problem", "/api/problems/reactions/classification?" + urlencode(query), method="GET")
+
+
+@connectors["audit"].handler(
+    "audit://problem/command/append-classification",
+    isolated=True,
+    external=True,
+    meta={"label": "Append a non-replayable canonical problem classification audit event"},
+)
+def append_problem_classification(fingerprint: str, correlation_id: str, replayable: bool = False) -> dict[str, Any]:
+    try:
+        fingerprint, correlation_id = _problem_reference(fingerprint, correlation_id)
+        if not correlation_id:
+            raise ValueError("problem_correlation_id_required")
+        if replayable is not False:
+            raise ValueError("problem_classification_must_not_be_replayable")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="audit")
+    return _control_call("audit", "/api/problems/reactions/audit-classification", {
+        "fingerprint": fingerprint,
+        "correlation_id": correlation_id,
+        "replayable": False,
+    })
 
 
 @connectors["project"].handler(

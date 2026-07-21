@@ -48,6 +48,10 @@ def test_concrete_routes_are_registered():
     assert "project://remediation/query/catalog" in routes
     assert "llm://remediation/command/propose-order" in routes
     assert "policy://remediation/command/validate-plan" in routes
+    assert "problem://events/query/by-fingerprint" in routes
+    assert "problem://reaction/command/record-occurrence" in routes
+    assert "problem://reaction/query/classification" in routes
+    assert "audit://problem/command/append-classification" in routes
 
 
 def test_recruitment_draft_uses_llm_gateway_without_caller_supplied_target(monkeypatch):
@@ -107,3 +111,35 @@ def test_planner_adapters_fail_closed_on_actor_controlled_policy(monkeypatch):
         core.propose_remediation_order("project-1", model="caller-model", prompt="arbitrary")
     with pytest.raises(TypeError):
         core.remediation_snapshot("project-1", url="http://caller", token="secret")
+
+
+def test_problem_observer_adapters_use_bounded_control_endpoints(monkeypatch):
+    calls = []
+    fingerprint = "a" * 64
+    correlation_id = "12345678-1234-1234-1234-123456789abc"
+    monkeypatch.setenv("SUBACTOR_CONTROL_URL", "http://hr-control:8181")
+    monkeypatch.setenv("SUBACTOR_CONTROL_TOKEN", "problem-observer-token")
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: calls.append(request) or Response({"ok": True}))
+
+    assert core.problem_by_fingerprint(fingerprint, correlation_id)["ok"]
+    assert core.record_problem_occurrence(fingerprint, correlation_id, 0)["ok"]
+    assert core.problem_reaction_classification(fingerprint, correlation_id, False)["ok"]
+    assert core.append_problem_classification(fingerprint, correlation_id, False)["ok"]
+
+    assert [request.full_url for request in calls] == [
+        f"http://hr-control:8181/api/problems/events/by-fingerprint?fingerprint={fingerprint}&correlation_id={correlation_id}",
+        "http://hr-control:8181/api/problems/reactions/occurrences",
+        f"http://hr-control:8181/api/problems/reactions/classification?fingerprint={fingerprint}&correlation_id={correlation_id}",
+        "http://hr-control:8181/api/problems/reactions/audit-classification",
+    ]
+    assert all(request.headers["Authorization"] == "Bearer problem-observer-token" for request in calls)
+    assert "problem-observer-token" not in json.dumps([core.problem_by_fingerprint(fingerprint)])
+
+
+def test_problem_observer_adapters_reject_unbounded_actor_inputs():
+    fingerprint = "a" * 64
+    correlation_id = "12345678-1234-1234-1234-123456789abc"
+    assert core.problem_by_fingerprint("../state")["ok"] is False
+    assert core.record_problem_occurrence(fingerprint, correlation_id, 1)["ok"] is False
+    assert core.problem_reaction_classification(fingerprint, correlation_id, True)["ok"] is False
+    assert core.append_problem_classification(fingerprint, correlation_id, True)["ok"] is False
