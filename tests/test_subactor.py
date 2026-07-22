@@ -46,6 +46,8 @@ def test_concrete_routes_are_registered():
     assert "recruitment://host/job-offer/command/draft" in routes
     assert "project://remediation/query/snapshot" in routes
     assert "project://remediation/query/catalog" in routes
+    assert "project://registry/query/manifests" in routes
+    assert "project://domain/query/health" in routes
     assert "llm://remediation/command/propose-order" in routes
     assert "policy://remediation/command/validate-plan" in routes
     assert "problem://events/query/by-fingerprint" in routes
@@ -119,6 +121,31 @@ def test_planner_adapters_fail_closed_on_actor_controlled_policy(monkeypatch):
         core.propose_remediation_order("project-1", model="caller-model", prompt="arbitrary")
     with pytest.raises(TypeError):
         core.remediation_snapshot("project-1", url="http://caller", token="secret")
+
+
+def test_project_inventory_adapters_use_bounded_reconciliation_queries(monkeypatch):
+    calls = []
+    monkeypatch.setenv("SUBACTOR_CONTROL_URL", "http://hr-control:8181")
+    monkeypatch.setenv("SUBACTOR_CONTROL_TOKEN", "project-read-token")
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: calls.append(request) or Response({"ok": True, "projects": []}))
+
+    assert core.project_registry_manifests()["ok"]
+    assert core.project_registry_manifests("demo-project", "demo.example.com", "corr-1")["ok"]
+    assert core.project_domain_health("demo-project", "demo.example.com", strict_tls=True)["ok"]
+
+    assert [request.full_url for request in calls] == [
+        "http://hr-control:8181/api/projects/reconciliation",
+        "http://hr-control:8181/api/projects/reconciliation?project_id=demo-project&domain=demo.example.com",
+        "http://hr-control:8181/api/projects/reconciliation?project_id=demo-project&domain=demo.example.com",
+    ]
+    assert all(request.headers["Authorization"] == "Bearer project-read-token" for request in calls)
+
+
+def test_project_inventory_adapters_reject_unbounded_inputs():
+    assert core.project_registry_manifests("../escape")["ok"] is False
+    assert core.project_domain_health()["ok"] is False
+    assert core.project_domain_health(domain="localhost")["ok"] is False
+    assert core.project_domain_health(domain="demo.example.com", strict_tls=False)["ok"] is False
 
 
 def test_problem_observer_adapters_use_bounded_control_endpoints(monkeypatch):

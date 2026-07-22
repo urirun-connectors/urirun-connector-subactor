@@ -497,6 +497,60 @@ def remediation_catalog(project_id: str) -> dict[str, Any]:
     return _control_call("project", "/api/projects/remediation/catalog?" + urlencode({"project_id": project}), method="GET")
 
 
+def _project_selection(project_id: str = "", domain: str = "") -> dict[str, str]:
+    selection: dict[str, str] = {}
+    if str(project_id or "").strip():
+        selection["project_id"] = _planner_project_id(project_id)
+    clean_domain = str(domain or "").strip().lower()
+    if clean_domain:
+        if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", clean_domain):
+            raise ValueError("invalid_project_domain")
+        selection["domain"] = clean_domain
+    return selection
+
+
+@connectors["project"].handler(
+    "project://registry/query/manifests",
+    isolated=True,
+    external=True,
+    meta={"label": "Read the canonical project reconciliation manifest projection"},
+)
+def project_registry_manifests(project_id: str = "", domain: str = "", correlation_id: str = "") -> dict[str, Any]:
+    try:
+        selection = _project_selection(project_id, domain)
+        if correlation_id and (len(str(correlation_id)) > 80 or any(c.isspace() for c in str(correlation_id))):
+            raise ValueError("invalid_correlation_id")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="project")
+    query = "?" + urlencode(selection) if selection else ""
+    return _control_call("project", "/api/projects/reconciliation" + query, method="GET")
+
+
+@connectors["project"].handler(
+    "project://domain/query/health",
+    isolated=True,
+    external=True,
+    meta={"label": "Read one project domain health projection"},
+)
+def project_domain_health(
+    project_id: str = "",
+    domain: str = "",
+    correlation_id: str = "",
+    strict_tls: bool = True,
+) -> dict[str, Any]:
+    try:
+        selection = _project_selection(project_id, domain)
+        if not selection:
+            raise ValueError("project_selection_required")
+        if strict_tls is not True:
+            raise ValueError("strict_tls_must_equal_true")
+        if correlation_id and (len(str(correlation_id)) > 80 or any(c.isspace() for c in str(correlation_id))):
+            raise ValueError("invalid_correlation_id")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="project")
+    return _control_call("project", "/api/projects/reconciliation?" + urlencode(selection), method="GET")
+
+
 @connectors["llm"].handler(
     "llm://remediation/command/propose-order",
     isolated=True,

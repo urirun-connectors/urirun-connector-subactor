@@ -52,6 +52,8 @@
     "problem://reaction/query/classification",
     "project://host/doctor/query/report",
     "project://host/process/command/dispatch",
+    "project://domain/query/health",
+    "project://registry/query/manifests",
     "project://remediation/query/catalog",
     "project://remediation/query/snapshot",
     "recruitment://host/doctor/query/report",
