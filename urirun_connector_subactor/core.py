@@ -12,7 +12,7 @@ import os
 import re
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 import urirun
@@ -159,6 +159,165 @@ def organization_status(organization_id: str = "org-demo") -> dict[str, Any]:
         "organization", path, method="GET",
         base_env="ORG_CORE_INTERNAL_URL", token_env="ORG_CORE_SERVICE_TOKEN",
     )
+
+
+_ANALYTICS_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
+_ANALYTICS_EVENT_TYPE = re.compile(r"^[a-z][a-z0-9_.-]{1,127}$")
+_SENSITIVE_ANALYTICS_KEY = re.compile(r"password|secret|token|authorization|api[_-]?key|credential", re.IGNORECASE)
+
+
+def _analytics_reference(value: str, field: str, *, required: bool = False) -> str:
+    normalized = str(value or "").strip()
+    if not normalized and not required:
+        return ""
+    if not _ANALYTICS_REFERENCE.fullmatch(normalized):
+        raise ValueError(f"analytics_{field}_invalid")
+    return normalized
+
+
+def _contains_sensitive_analytics_key(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(_contains_sensitive_analytics_key(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    return any(
+        _SENSITIVE_ANALYTICS_KEY.search(str(key)) or _contains_sensitive_analytics_key(item)
+        for key, item in value.items()
+    )
+
+
+def _analytics_call(path: str, payload: dict[str, Any] | None = None, *, method: str = "GET") -> dict[str, Any]:
+    return _call(
+        "analytics",
+        path,
+        payload,
+        method=method,
+        base_env="SUBACTOR_ANALYTICS_URL",
+        token_env="SUBACTOR_ANALYTICS_TOKEN",
+    )
+
+
+def _analytics_query(path: str, tenant_id: str = "") -> dict[str, Any]:
+    try:
+        tenant = _analytics_reference(tenant_id, "tenant_id")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="analytics")
+    query = f"?{urlencode({'tenant_id': tenant})}" if tenant else ""
+    return _analytics_call(f"{path}{query}")
+
+
+@connectors["analytics"].handler(
+    "event/command/ingest",
+    isolated=True,
+    external=True,
+    meta={"label": "Append one canonical Subactor analytics event"},
+)
+def ingest_analytics_event(
+    event_type: str,
+    source: str,
+    correlation_id: str = "",
+    event_id: str = "",
+    occurred_at: str = "",
+    tenant_id: str = "",
+    session_id: str = "",
+    domain: str = "",
+    variant_key: str = "",
+    receiver_state: str = "",
+    request_intent: str = "",
+    requester_actor: str = "",
+    environment: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        normalized_type = str(event_type or "").strip()
+        if not _ANALYTICS_EVENT_TYPE.fullmatch(normalized_type):
+            raise ValueError("analytics_event_type_invalid")
+        normalized_source = _analytics_reference(source, "source", required=True)
+        references = {
+            "correlation_id": _analytics_reference(correlation_id, "correlation_id"),
+            "event_id": _analytics_reference(event_id, "event_id"),
+            "tenant_id": _analytics_reference(tenant_id, "tenant_id"),
+            "session_id": _analytics_reference(session_id, "session_id"),
+            "variant_key": _analytics_reference(variant_key, "variant_key"),
+            "receiver_state": _analytics_reference(receiver_state, "receiver_state"),
+            "request_intent": _analytics_reference(request_intent, "request_intent"),
+            "requester_actor": _analytics_reference(requester_actor, "requester_actor"),
+        }
+        if len(str(domain or "")) > 253 or len(str(occurred_at or "")) > 64:
+            raise ValueError("analytics_event_field_too_long")
+        objects = {
+            "environment": environment if isinstance(environment, dict) else {},
+            "context": context if isinstance(context, dict) else {},
+            "data": data if isinstance(data, dict) else {},
+        }
+        if any(_contains_sensitive_analytics_key(value) for value in objects.values()):
+            raise ValueError("analytics_event_sensitive_field")
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="analytics")
+    payload = {
+        "type": normalized_type,
+        "source": normalized_source,
+        "occurred_at": str(occurred_at or "").strip(),
+        "domain": str(domain or "").strip(),
+        **references,
+        **objects,
+    }
+    return _analytics_call("/api/events", payload, method="POST")
+
+
+@connectors["analytics"].handler("overview/query", isolated=True, external=True, meta={"label": "Read analytics overview"})
+def analytics_overview(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/overview", tenant_id)
+
+
+@connectors["analytics"].handler("sessions/query", isolated=True, external=True, meta={"label": "Read live analytics sessions"})
+def analytics_sessions(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/sessions", tenant_id)
+
+
+@connectors["analytics"].handler("session/query/story", isolated=True, external=True, meta={"label": "Read one analytics session story"})
+def analytics_session_story(session_id: str) -> dict[str, Any]:
+    try:
+        session = _analytics_reference(session_id, "session_id", required=True)
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="analytics")
+    return _analytics_call(f"/api/sessions/{quote(session, safe='')}")
+
+
+@connectors["analytics"].handler("funnel/query", isolated=True, external=True, meta={"label": "Read analytics funnel projection"})
+def analytics_funnel(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/funnel", tenant_id)
+
+
+@connectors["analytics"].handler("health/query", isolated=True, external=True, meta={"label": "Read tenant analytics health"})
+def analytics_health(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/health", tenant_id)
+
+
+@connectors["analytics"].handler("timeline/query", isolated=True, external=True, meta={"label": "Read analytics timeline"})
+def analytics_timeline(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/timeline", tenant_id)
+
+
+@connectors["analytics"].handler("correlations/query", isolated=True, external=True, meta={"label": "Read analytics correlations"})
+def analytics_correlations(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/correlations", tenant_id)
+
+
+@connectors["analytics"].handler("communication-score/query", isolated=True, external=True, meta={"label": "Read communication score"})
+def analytics_communication_score(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/score", tenant_id)
+
+
+@connectors["analytics"].handler("recommendations/query", isolated=True, external=True, meta={"label": "Read evidence-based recommendations"})
+def analytics_recommendations(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/recommendations", tenant_id)
+
+
+@connectors["analytics"].handler("alerts/query", isolated=True, external=True, meta={"label": "Read analytics alerts"})
+def analytics_alerts(tenant_id: str = "") -> dict[str, Any]:
+    return _analytics_query("/api/alerts", tenant_id)
 
 
 @connectors["recruitment"].handler(

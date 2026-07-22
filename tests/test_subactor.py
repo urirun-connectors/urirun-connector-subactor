@@ -52,6 +52,14 @@ def test_concrete_routes_are_registered():
     assert "problem://reaction/command/record-occurrence" in routes
     assert "problem://reaction/query/classification" in routes
     assert "audit://problem/command/append-classification" in routes
+    assert "analytics://host/event/command/ingest" in routes
+    assert "analytics://host/overview/query" in routes
+    assert "analytics://host/session/query/story" in routes
+    assert "analytics://host/funnel/query" in routes
+    assert "analytics://host/correlations/query" in routes
+    assert "analytics://host/communication-score/query" in routes
+    assert "analytics://host/recommendations/query" in routes
+    assert "analytics://host/alerts/query" in routes
 
 
 def test_recruitment_draft_uses_llm_gateway_without_caller_supplied_target(monkeypatch):
@@ -143,3 +151,36 @@ def test_problem_observer_adapters_reject_unbounded_actor_inputs():
     assert core.record_problem_occurrence(fingerprint, correlation_id, 1)["ok"] is False
     assert core.problem_reaction_classification(fingerprint, correlation_id, True)["ok"] is False
     assert core.append_problem_classification(fingerprint, correlation_id, True)["ok"] is False
+
+
+def test_analytics_adapters_use_only_configured_service(monkeypatch):
+    calls = []
+    monkeypatch.setenv("SUBACTOR_ANALYTICS_URL", "http://analytics:8089")
+    monkeypatch.setenv("SUBACTOR_ANALYTICS_TOKEN", "analytics-token")
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: calls.append(request) or Response({"ok": True}))
+
+    assert core.ingest_analytics_event(
+        "page.view", "site-generator", correlation_id="corr-1", event_id="evt-1",
+        tenant_id="tenant-1", session_id="session-1", data={"path": "/"},
+    )["ok"]
+    assert core.analytics_overview("tenant-1")["ok"]
+    assert core.analytics_session_story("session-1")["ok"]
+    assert core.analytics_correlations()["ok"]
+
+    assert [request.full_url for request in calls] == [
+        "http://analytics:8089/api/events",
+        "http://analytics:8089/api/overview?tenant_id=tenant-1",
+        "http://analytics:8089/api/sessions/session-1",
+        "http://analytics:8089/api/correlations",
+    ]
+    assert all(request.headers["Authorization"] == "Bearer analytics-token" for request in calls)
+    assert "analytics-token" not in json.dumps([core.analytics_overview()])
+
+
+def test_analytics_adapters_reject_unbounded_or_sensitive_inputs():
+    assert core.ingest_analytics_event("INVALID TYPE", "site-generator")["ok"] is False
+    assert core.ingest_analytics_event("page.view", "site-generator", data={"api_key": "secret"})["ok"] is False
+    assert core.analytics_overview("../tenant")["ok"] is False
+    assert core.analytics_session_story("../session")["ok"] is False
+    with pytest.raises(TypeError):
+        core.analytics_overview(url="http://caller", token="secret")

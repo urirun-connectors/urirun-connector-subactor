@@ -13,6 +13,13 @@ Supported schemes: `analytics`, `audit`, `contractor`, `docs`, `llm`, `mail`, `o
 `organization`, `policy`, `problem`, `project`, `recruitment`, `site-generator`, `social`,
 `support`, `test`, `testql`, and `webpage`.
 
+The analytics adapter exposes exact, authenticated routes for canonical event
+ingestion and CQRS read projections: overview, sessions, funnel, tenant health,
+timeline, correlations, communication score, recommendations and alerts. Set
+`SUBACTOR_ANALYTICS_URL` and `SUBACTOR_ANALYTICS_TOKEN`; callers cannot provide
+either value in a process payload, and analytics events reject credential-like
+fields recursively.
+
 The remediation planner exposes four exact, bounded routes:
 
 - `project://remediation/query/snapshot`
