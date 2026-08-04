@@ -74,6 +74,7 @@ def test_recruitment_draft_uses_llm_gateway_without_caller_supplied_target(monke
         "Utwórz ofertę dla inżyniera automatyzacji PHP.",
         {"work_mode": "remote"},
         {"organization": {"name": "Subactor"}},
+        "openrouter/x-ai/grok-4.5",
     )
 
     assert result["ok"] is True
@@ -81,12 +82,14 @@ def test_recruitment_draft_uses_llm_gateway_without_caller_supplied_target(monke
     assert request.full_url == "http://llm-gateway:8084/forms/recruitment/job-offer/draft"
     assert request.headers["Authorization"] == "Bearer gateway-token"
     assert timeout == 60.0
+    assert json.loads(request.data)["preferred_model"] == "openrouter/x-ai/grok-4.5"
     assert "gateway-token" not in json.dumps(result)
 
 
 def test_recruitment_draft_rejects_unbounded_instruction(monkeypatch):
     assert core.draft_job_offer("za krótko")["ok"] is False
     assert core.draft_job_offer("x" * 6001)["ok"] is False
+    assert core.draft_job_offer("Utwórz prawidłowy szkic oferty.", preferred_model="openrouter/unknown")['ok'] is False
 
 
 def test_planner_adapters_use_only_configured_control_target(monkeypatch, tmp_path):

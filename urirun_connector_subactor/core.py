@@ -330,6 +330,7 @@ def draft_job_offer(
     instruction: str,
     current_values: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    preferred_model: str = "",
 ) -> dict[str, Any]:
     """Generate a job-offer draft through the deployment-controlled LLM gateway.
 
@@ -340,6 +341,14 @@ def draft_job_offer(
     clean_instruction = str(instruction or "").strip()
     if len(clean_instruction) < 10 or len(clean_instruction) > 6000:
         return urirun.fail("instruction must contain 10..6000 characters", connector=CONNECTOR_ID, scheme="recruitment")
+    clean_model = str(preferred_model or "").strip()
+    allowed_models = {
+        "openrouter/z-ai/glm-5.2",
+        "openrouter/x-ai/grok-4.5",
+        "openrouter/google/gemini-3.6-flash",
+    }
+    if clean_model and clean_model not in allowed_models:
+        return urirun.fail("preferred_model_not_allowed", connector=CONNECTOR_ID, scheme="recruitment")
     return _call(
         "recruitment",
         "/forms/recruitment/job-offer/draft",
@@ -347,6 +356,7 @@ def draft_job_offer(
             "instruction": clean_instruction,
             "current_values": current_values if isinstance(current_values, dict) else {},
             "context": context if isinstance(context, dict) else {},
+            "preferred_model": clean_model or None,
         },
         base_env="LLM_GATEWAY_INTERNAL_URL",
         token_env="LLM_GATEWAY_SERVICE_TOKEN",
