@@ -4,12 +4,13 @@ Server-side connector for URI processes implemented by Subactor services.
 
 It provides concrete routes such as `site-generator://host/site/command/generate`,
 `organization://host/status/query`, and
-`recruitment://host/job-offer/command/draft`, plus a controlled
+`recruitment://host/job-offer/command/draft`,
+`control://delegation/remediation/command/evaluate`, plus a controlled
 `<scheme>://host/process/command/dispatch` route for Subactor-owned schemes.
 Every target base URL and credential comes from the node environment; an actor
 cannot inject a target host or bearer token through the process payload.
 
-Supported schemes: `analytics`, `audit`, `contractor`, `docs`, `llm`, `mail`, `org`,
+Supported schemes: `analytics`, `audit`, `contractor`, `control`, `docs`, `llm`, `mail`, `org`,
 `organization`, `policy`, `problem`, `project`, `recruitment`, `site-generator`, `social`,
 `support`, `test`, `testql`, and `webpage`.
 
@@ -43,6 +44,15 @@ They use the deployment-controlled Control URL and a token limited to
 `problems:observe`. Repeating the same fingerprint/correlation pair is
 idempotent; callers cannot enable infrastructure mutation or replay the audit
 classification.
+
+The delegation-remediation guard exposes one exact, dry-run-only route:
+
+- `control://delegation/remediation/command/evaluate`
+
+It accepts only a Planfile ticket id, correlation id and `dry_run=true`. Control
+performs the canonical ticket-graph evaluation and returns a bounded read-back;
+the connector cannot create a ticket, select another endpoint or enable a
+mutation.
 
 For `site-generator://host/site/command/generate`, configure `SITE_GENERATOR_URL` and
 `SITE_GENERATOR_SERVICE_TOKEN`. Generic service adapters use

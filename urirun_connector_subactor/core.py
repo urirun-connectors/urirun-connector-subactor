@@ -8,18 +8,19 @@ deployment-controlled base URLs; callers cannot supply a host or a secret.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 import urirun
 
 CONNECTOR_ID = "subactor"
 SCHEMES = (
-    "analytics", "audit", "contractor", "docs", "mail", "org", "organization",
+    "analytics", "audit", "browser", "contractor", "control", "docs", "mail", "org", "organization",
     "llm", "policy", "problem", "project", "recruitment", "site-generator", "social", "support", "test", "testql", "webpage",
 )
 connectors = {scheme: urirun.connector(f"subactor-{scheme}", scheme=scheme) for scheme in SCHEMES}
@@ -104,11 +105,178 @@ def _register_gateway(scheme: str) -> None:
     connectors[scheme].handler("doctor/query/report", isolated=True, meta={"label": f"{scheme} readiness"})(doctor)
 
 
-GATEWAY_SCHEMES = tuple(scheme for scheme in SCHEMES if scheme not in {"llm", "policy"})
+GATEWAY_SCHEMES = tuple(scheme for scheme in SCHEMES if scheme not in {"browser", "llm", "policy"})
 
 
 for _scheme in GATEWAY_SCHEMES:
     _register_gateway(_scheme)
+
+
+CONNECT_COMPANY_RESEARCH_CATALOG = (
+    {
+        "id": "digitland",
+        "name": "Digitland",
+        "source_url": "https://www.digitland.pl/",
+        "segment": "ERP/WMS/CRM",
+        "problem_signal": "Integracje systemów zarządzania z usługami i urządzeniami zewnętrznymi.",
+        "business_role": "COO / kierownik operacji",
+    },
+    {
+        "id": "integris",
+        "name": "Integris",
+        "source_url": "https://integris.pl/en/",
+        "segment": "ERP / Microsoft Dynamics",
+        "problem_signal": "Wdrożenia, integracje i utrzymanie ERP w strukturach międzynarodowych.",
+        "business_role": "ERP practice lead / delivery director",
+    },
+    {
+        "id": "changelog",
+        "name": "Changelog",
+        "source_url": "https://www.changelog.pl/",
+        "segment": "e-commerce integrations",
+        "problem_signal": "Integracje platform e-commerce z ERP oraz procesami logistyki i sprzedaży.",
+        "business_role": "Head of e-commerce operations",
+    },
+    {
+        "id": "redbay",
+        "name": "Redbay Integrator",
+        "source_url": "https://www.platformaintegracyjna.pl/",
+        "segment": "ERP / marketplace / e-commerce",
+        "problem_signal": "Synchronizacja systemów ERP, marketplace, retail i sprzedaży B2B.",
+        "business_role": "integration delivery owner",
+    },
+    {
+        "id": "polkas",
+        "name": "POLKAS",
+        "source_url": "https://erp.polkas.pl/wms-systemy-magazynowanie-i-logistyka/",
+        "segment": "ERP/WMS",
+        "problem_signal": "Przepływ danych magazynowych między logistyką, sprzedażą, produkcją i księgowością.",
+        "business_role": "logistics transformation lead",
+    },
+    {
+        "id": "rigby",
+        "name": "Rigby",
+        "source_url": "https://www.rigbyjs.com/about-us",
+        "segment": "custom e-commerce",
+        "problem_signal": "Budowa skalowalnych platform B2B, B2C i marketplace wymagających integracji.",
+        "business_role": "e-commerce technology lead",
+    },
+    {
+        "id": "sellintegro",
+        "name": "SellIntegro",
+        "source_url": "https://www.sellintegro.pl/",
+        "segment": "ERP to e-commerce integration",
+        "problem_signal": "Automatyzacja i synchronizacja procesów sprzedaży pomiędzy ERP i e-commerce.",
+        "business_role": "product / integration lead",
+    },
+    {
+        "id": "ibcs",
+        "name": "IBCS Poland",
+        "source_url": "https://www.ibcs.pl/",
+        "segment": "WMS / logistics systems",
+        "problem_signal": "Modernizacja zintegrowanych systemów logistycznych i WMS połączonych z ERP.",
+        "business_role": "logistics systems lead",
+    },
+    {
+        "id": "softwarestudio",
+        "name": "SoftwareStudio",
+        "source_url": "https://www.softwarestudio.com.pl/integracje/",
+        "segment": "ERP/WMS/API integration",
+        "problem_signal": "Eliminacja ręcznego przepisywania danych między WMS, ERP, kurierami i e-commerce.",
+        "business_role": "integration architect",
+    },
+    {
+        "id": "storise",
+        "name": "Storise",
+        "source_url": "https://www.storise.eu/",
+        "segment": "e-commerce platforms and automation",
+        "problem_signal": "Migracje, automatyzacje i integracje zewnętrznych systemów dla commerce.",
+        "business_role": "e-commerce engineering lead",
+    },
+)
+_RESEARCH_TERMS = ("erp", "wms", "e-commerce", "ecommerce", "integrac", "commerce", "logist")
+
+
+def _same_declared_source(expected: str, observed: str) -> bool:
+    expected_url = urlsplit(expected)
+    observed_url = urlsplit(observed)
+    expected_host = str(expected_url.hostname or "").lower().removeprefix("www.")
+    observed_host = str(observed_url.hostname or "").lower().removeprefix("www.")
+    return observed_url.scheme == "https" and observed_host == expected_host
+
+
+def _validate_public_company_source(item: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+    request = Request(
+        item["source_url"],
+        headers={"accept": "text/html,application/xhtml+xml", "user-agent": "Subactor Company Research/1.0"},
+        method="GET",
+    )
+    with urlopen(request, timeout=timeout_seconds) as response:
+        final_url = str(getattr(response, "geturl", lambda: item["source_url"])())
+        if not _same_declared_source(item["source_url"], final_url):
+            raise ValueError("company_research_cross_origin_redirect")
+        status = int(getattr(response, "status", 0))
+        if status != 200:
+            raise ValueError(f"company_research_http_{status}")
+        raw = response.read(512 * 1024).decode("utf-8", errors="replace")
+    normalized = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw)).lower()
+    matched = sorted({term for term in _RESEARCH_TERMS if term in normalized})
+    if len(normalized) < 300 or not matched:
+        raise ValueError("company_research_evidence_missing")
+    return {
+        **item,
+        "source_status": status,
+        "evidence_terms": matched,
+        "verified": True,
+    }
+
+
+@connectors["browser"].handler(
+    "browser://web/company-research/query/validate",
+    isolated=True,
+    external=True,
+    meta={"label": "Validate a closed catalog of public ERP/WMS/e-commerce companies"},
+)
+def validate_connect_companies(
+    icp: str,
+    limit: int = 10,
+    outreach: bool = False,
+    timeout_seconds: float = 12.0,
+) -> dict[str, Any]:
+    if outreach is not False:
+        return urirun.fail("company_research_outreach_forbidden", connector=CONNECTOR_ID, scheme="browser")
+    if not 1 <= int(limit) <= len(CONNECT_COMPANY_RESEARCH_CATALOG):
+        return urirun.fail("company_research_limit_invalid", connector=CONNECTOR_ID, scheme="browser")
+    normalized_icp = str(icp or "").strip()
+    if len(normalized_icp) < 8 or len(normalized_icp) > 200:
+        return urirun.fail("company_research_icp_invalid", connector=CONNECTOR_ID, scheme="browser")
+    timeout = max(1.0, min(float(timeout_seconds), 20.0))
+    organizations = []
+    failures = []
+    for item in CONNECT_COMPANY_RESEARCH_CATALOG[: int(limit)]:
+        try:
+            organizations.append(_validate_public_company_source(item, timeout))
+        except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+            failures.append({"id": item["id"], "error": str(exc)[:120]})
+    if len(organizations) != int(limit):
+        return urirun.fail(
+            "company_research_incomplete",
+            connector=CONNECTOR_ID,
+            scheme="browser",
+            required_count=int(limit),
+            validated_count=len(organizations),
+            failures=failures,
+        )
+    return urirun.ok(
+        connector=CONNECTOR_ID,
+        scheme="browser",
+        schema="subactor.company-research-validation/v1",
+        icp=normalized_icp,
+        required_count=int(limit),
+        validated_count=len(organizations),
+        outreach_attempted=False,
+        organizations=organizations,
+    )
 
 
 @connectors["site-generator"].handler(
@@ -266,6 +434,65 @@ def ingest_analytics_event(
     return _analytics_call("/api/events", payload, method="POST")
 
 
+@connectors["analytics"].handler(
+    "analytics://connect/lead-research/command/record",
+    isolated=True,
+    external=True,
+    meta={"label": "Persist the closed Connect pilot company-research evidence batch"},
+)
+def record_connect_lead_research(
+    project_id: str = "connect-saas-first-pilot-2026-07",
+    ticket_id: str = "PLF-847",
+    outreach: bool = False,
+) -> dict[str, Any]:
+    if outreach is not False:
+        return urirun.fail("lead_research_outreach_forbidden", connector=CONNECTOR_ID, scheme="analytics")
+    try:
+        project = _analytics_reference(project_id, "project_id", required=True)
+        ticket = _analytics_reference(ticket_id, "ticket_id", required=True)
+    except ValueError as exc:
+        return urirun.fail(str(exc), connector=CONNECTOR_ID, scheme="analytics")
+    organizations = [
+        {
+            key: item[key]
+            for key in ("id", "name", "source_url", "segment", "problem_signal", "business_role")
+        }
+        for item in CONNECT_COMPANY_RESEARCH_CATALOG
+    ]
+    fingerprint = hashlib.sha256(
+        json.dumps(organizations, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    event_id = f"connect-research-{fingerprint}"
+    response = ingest_analytics_event(
+        "connect.lead_research.recorded",
+        "marketing-operator-bot",
+        event_id=event_id,
+        correlation_id=ticket.lower(),
+        tenant_id="subactor",
+        data={
+            "schema": "subactor.company-research-evidence/v1",
+            "project_id": project,
+            "ticket_id": ticket,
+            "validated_count": len(organizations),
+            "outreach_attempted": False,
+            "organizations": organizations,
+        },
+    )
+    if response.get("ok") is not True:
+        return response
+    return urirun.ok(
+        connector=CONNECTOR_ID,
+        scheme="analytics",
+        schema="subactor.company-research-record-receipt/v1",
+        evidence_ref=f"analytics://events/{event_id}",
+        event_id=event_id,
+        project_id=project,
+        ticket_id=ticket,
+        recorded_count=len(organizations),
+        outreach_attempted=False,
+    )
+
+
 @connectors["analytics"].handler("overview/query", isolated=True, external=True, meta={"label": "Read analytics overview"})
 def analytics_overview(tenant_id: str = "") -> dict[str, Any]:
     return _analytics_query("/api/overview", tenant_id)
@@ -381,6 +608,32 @@ def _control_call(scheme: str, path: str, payload: dict[str, Any] | None = None,
         token_env="SUBACTOR_CONTROL_TOKEN",
         timeout_seconds=60.0,
     )
+
+
+@connectors["control"].handler(
+    "control://delegation/remediation/command/evaluate",
+    isolated=True,
+    external=True,
+    meta={"label": "Evaluate the non-recursive delegation-remediation invariant"},
+)
+def evaluate_delegation_remediation(
+    ticket_id: str,
+    correlation_id: str,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    ticket = str(ticket_id or "").strip().upper()
+    correlation = str(correlation_id or "").strip()
+    if not re.fullmatch(r"PLF-[1-9][0-9]*", ticket):
+        return urirun.fail("invalid_ticket_id", connector=CONNECTOR_ID, scheme="control")
+    if not re.fullmatch(r"[a-f0-9-]{36}", correlation):
+        return urirun.fail("invalid_correlation_id", connector=CONNECTOR_ID, scheme="control")
+    if dry_run is not True:
+        return urirun.fail("dry_run_must_equal_true", connector=CONNECTOR_ID, scheme="control")
+    return _control_call("control", "/api/delegation/remediation/evaluate", {
+        "ticket_id": ticket,
+        "correlation_id": correlation,
+        "dry_run": True,
+    })
 
 
 def _problem_reference(fingerprint: str, correlation_id: str = "") -> tuple[str, str]:

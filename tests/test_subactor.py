@@ -62,6 +62,9 @@ def test_concrete_routes_are_registered():
     assert "analytics://host/communication-score/query" in routes
     assert "analytics://host/recommendations/query" in routes
     assert "analytics://host/alerts/query" in routes
+    assert "analytics://connect/lead-research/command/record" in routes
+    assert "browser://web/company-research/query/validate" in routes
+    assert "control://delegation/remediation/command/evaluate" in routes
 
 
 def test_recruitment_draft_uses_llm_gateway_without_caller_supplied_target(monkeypatch):
@@ -124,6 +127,38 @@ def test_planner_adapters_fail_closed_on_actor_controlled_policy(monkeypatch):
         core.propose_remediation_order("project-1", model="caller-model", prompt="arbitrary")
     with pytest.raises(TypeError):
         core.remediation_snapshot("project-1", url="http://caller", token="secret")
+
+
+def test_delegation_remediation_guard_uses_only_configured_control_target(monkeypatch):
+    calls = []
+    correlation_id = "12345678-1234-1234-1234-123456789abc"
+    monkeypatch.setenv("SUBACTOR_CONTROL_URL", "http://hr-control:8181")
+    monkeypatch.setenv("SUBACTOR_CONTROL_TOKEN", "guard-token")
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: calls.append(request) or Response({
+        "ok": True,
+        "evaluation": {"tickets_created": 0, "source_mutated": False},
+    }))
+
+    result = core.evaluate_delegation_remediation("plf-1200", correlation_id)
+
+    assert result["ok"] is True
+    assert calls[0].full_url == "http://hr-control:8181/api/delegation/remediation/evaluate"
+    assert calls[0].headers["Authorization"] == "Bearer guard-token"
+    assert json.loads(calls[0].data) == {
+        "ticket_id": "PLF-1200",
+        "correlation_id": correlation_id,
+        "dry_run": True,
+    }
+    assert "guard-token" not in json.dumps(result)
+
+
+def test_delegation_remediation_guard_rejects_unbounded_inputs():
+    correlation_id = "12345678-1234-1234-1234-123456789abc"
+    assert core.evaluate_delegation_remediation("../ticket", correlation_id)["ok"] is False
+    assert core.evaluate_delegation_remediation("PLF-1200", "bad correlation")["ok"] is False
+    assert core.evaluate_delegation_remediation("PLF-1200", correlation_id, False)["ok"] is False
+    with pytest.raises(TypeError):
+        core.evaluate_delegation_remediation("PLF-1200", correlation_id, url="http://caller", token="secret")
 
 
 def test_project_inventory_adapters_use_bounded_reconciliation_queries(monkeypatch):
@@ -214,3 +249,54 @@ def test_analytics_adapters_reject_unbounded_or_sensitive_inputs():
     assert core.analytics_session_story("../session")["ok"] is False
     with pytest.raises(TypeError):
         core.analytics_overview(url="http://caller", token="secret")
+
+
+def test_company_research_validates_exactly_ten_closed_public_sources(monkeypatch):
+    pages = []
+
+    class PublicResponse(Response):
+        def __init__(self, request):
+            super().__init__({"ok": True})
+            self.request = request
+        def geturl(self):
+            return self.request.full_url
+        def read(self, _limit):
+            return (f"<html><body>{'ERP WMS e-commerce integrations ' * 30}</body></html>").encode()
+
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: pages.append(request.full_url) or PublicResponse(request))
+    result = core.validate_connect_companies("ERP/WMS/e-commerce integrators", 10, False)
+
+    assert result["ok"] is True
+    assert result["validated_count"] == 10
+    assert result["outreach_attempted"] is False
+    assert pages == [item["source_url"] for item in core.CONNECT_COMPANY_RESEARCH_CATALOG]
+    assert all(item["verified"] is True for item in result["organizations"])
+
+
+def test_company_research_fails_closed_on_outreach_or_incomplete_evidence(monkeypatch):
+    assert core.validate_connect_companies("ERP/WMS/e-commerce integrators", 10, True)["ok"] is False
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: (_ for _ in ()).throw(core.URLError("offline")))
+    result = core.validate_connect_companies("ERP/WMS/e-commerce integrators", 10, False)
+    assert result["ok"] is False
+    assert result["validated_count"] == 0
+    assert len(result["failures"]) == 10
+
+
+def test_connect_research_record_writes_one_idempotent_analytics_event(monkeypatch):
+    calls = []
+    monkeypatch.setenv("SUBACTOR_ANALYTICS_URL", "http://analytics:8094")
+    monkeypatch.setenv("SUBACTOR_ANALYTICS_TOKEN", "analytics-token")
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: calls.append(request) or Response({"ok": True, "inserted": True}))
+
+    result = core.record_connect_lead_research()
+
+    assert result["ok"] is True
+    assert result["recorded_count"] == 10
+    assert result["outreach_attempted"] is False
+    assert result["evidence_ref"].startswith("analytics://events/connect-research-")
+    assert calls[0].full_url == "http://analytics:8094/api/events"
+    event = json.loads(calls[0].data)
+    assert event["type"] == "connect.lead_research.recorded"
+    assert event["data"]["validated_count"] == 10
+    assert len(event["data"]["organizations"]) == 10
+    assert calls[0].headers["Authorization"] == "Bearer analytics-token"
